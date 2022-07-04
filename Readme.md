@@ -168,7 +168,7 @@ kubectl -n vault get secrets
 Go to the parent dir ( `cd ..`) and let's apply the deployment:
 
 ```
-kubectl -n vault apply -f ./manifests/vault4.yaml
+kubectl -n vault apply -f ./manifests/vault5.yaml
 ```
 
 
