@@ -19,7 +19,7 @@ https://github.com/marcel-dempers/docker-development-youtube-series/tree/master/
 First, lets create a new cluster identified with the name `vault` and we will specify the kubernetes version  `1.21.1`
 
 ```
-kind create cluster --name vault --image kindest/node:v1.21.1 --config kind.yaml
+kind create cluster --name vault --image kindest/node:v1.24.2 --config kind.yaml
 ```
 
 Prepare kubectl context:
@@ -118,7 +118,7 @@ Now, lets create the main YAML for the deployment using the hashicorp
 ```
 helm template vault hashicorp/vault \
   --namespace vault \
-  --version 0.19.0 \
+  --version 0.20.1 \
   -f vault-values.yaml \
   > ./manifests/vault5.yaml
 ```
@@ -186,4 +186,14 @@ and run the init command
 vault operator init
 ```
 
-you should get a list of keys and certs
+You should get a list of keys and certs, save the token 
+
+
+### Validate UI
+
+For validation you can proxy the UI and login with the root token 
+
+```
+kubectl -n vault port-forward svc/vault-ui 8200:8200 --address='0.0.0.0'
+```
+
