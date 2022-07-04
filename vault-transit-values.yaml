@@ -1,0 +1,59 @@
+# Vault Helm Chart Value Overrides
+global:
+  enabled: true
+  tlsDisable: false
+
+injector:
+  enabled: false
+  
+server:
+  image:
+    repository: "hashicorp/vault"
+    tag: "1.9.2"
+
+  config: |
+      ui = true
+      listener "tcp" {
+        tls_disable = 0
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+      storage "file" {
+        path = "/vault/data"
+      }
+
+  serviceAccount:
+    create: false
+  # For HA configuration and because we need to manually init the vault,
+  # we need to define custom readiness/liveness Probe settings
+  readinessProbe:
+    enabled: false
+  livenessProbe:
+    enabled: false
+
+  dataStorage:
+    enabled: true
+
+  # extraEnvironmentVars is a list of extra environment variables to set with the stateful set. These could be
+  # used to include variables required for auto-unseal.
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/tls-ca/tls.crt
+
+  # extraVolumes is a list of extra volumes to mount. These will be exposed
+  # to Vault in the path `/vault/userconfig/<name>/`.
+  extraVolumes:
+    - type: secret
+      name: tls-transit-server
+    - type: secret
+      name: tls-ca
+
+  standalone:
+    enabled: true
+
+  # Run Vault in "HA" mode.
+  ha:
+    enabled: false
+# Vault UI
+ui:
+  enabled: true
+  externalPort: 8200

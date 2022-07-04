@@ -1,0 +1,278 @@
+---
+# Source: vault/templates/server-config-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-transit-config
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-transit
+    app.kubernetes.io/instance: vault-transit
+data:
+  extraconfig-from-values.hcl: |-
+    disable_mlock = true
+    ui = true
+    
+    listener "tcp" {
+      tls_disable = 0
+      address = "[::]:8200"
+      cluster_address = "[::]:8201"
+      tls_cert_file = "/vault/userconfig/tls-transit-server/tls.crt"
+      tls_key_file = "/vault/userconfig/tls-transit-server/tls.key"
+      tls_ca_cert_file = "/vault/userconfig/tls-ca/tls.crt"
+      tls_min_version = "tls12"
+    }
+    storage "file" {
+      path = "/vault/data"
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-nodeport
+  namespace: vault
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: NodePort
+  # We want the servers to become available even if they're not ready
+  # since this DNS is also used for join operations.
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+      nodePort: 30000
+    - name: internal
+      port: 8201
+      targetPort: 8201
+      nodePort: 30001
+  selector:
+    app.kubernetes.io/name: vault-transit
+    component: server
+---
+# Source: vault/templates/server-headless-service.yaml
+# Service for Vault cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-transit
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-transit
+    app.kubernetes.io/instance: vault-transit
+  annotations:
+
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: "https"
+      port: 8200
+      targetPort: 8200
+    - name: https-internal
+      port: 8201
+      targetPort: 8201
+  selector:
+    app.kubernetes.io/name: vault-transit
+    app.kubernetes.io/instance: vault-transit
+    component: server
+---
+# Source: vault/templates/ui-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-transit-ui
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-transit-ui
+    app.kubernetes.io/instance: vault-transit
+spec:
+  selector:
+    app.kubernetes.io/name: vault-transit
+    app.kubernetes.io/instance: vault-transit
+    component: server
+  publishNotReadyAddresses: true
+  ports:
+    - name: https
+      port: 8200
+      targetPort: 8200
+  type: ClusterIP
+---
+# Source: vault/templates/server-statefulset.yaml
+# StatefulSet to run the actual vault server cluster.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault-transit
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-transit
+    app.kubernetes.io/instance: vault-transit
+spec:
+  serviceName: vault-transit
+  podManagementPolicy: Parallel
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault-transit
+      app.kubernetes.io/instance: vault-transit
+      component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault-transit
+        app.kubernetes.io/instance: vault-transit
+        component: server
+    spec:
+      
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vault-transit
+                  app.kubernetes.io/instance: "vault-transit"
+                  component: server
+              topologyKey: kubernetes.io/hostname
+  
+      
+      
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: default
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsGroup: 1000
+        runAsUser: 100
+        fsGroup: 1000
+      volumes:
+        
+        - name: config
+          configMap:
+            name: vault-transit-config
+  
+        - name: userconfig-tls-transit-server
+          secret:
+            secretName: tls-transit-server
+            defaultMode: 420
+        - name: userconfig-tls-ca
+          secret:
+            secretName: tls-ca
+            defaultMode: 420
+        - name: home
+          emptyDir: {}
+      containers:
+        - name: vault
+          
+          image: hashicorp/vault:1.9.2
+          imagePullPolicy: IfNotPresent
+          command:
+          - "/bin/sh"
+          - "-ec"
+          args: 
+          - |
+            cp /vault/config/extraconfig-from-values.hcl /tmp/storageconfig.hcl;
+            [ -n "${HOST_IP}" ] && sed -Ei "s|HOST_IP|${HOST_IP?}|g" /tmp/storageconfig.hcl;
+            [ -n "${POD_IP}" ] && sed -Ei "s|POD_IP|${POD_IP?}|g" /tmp/storageconfig.hcl;
+            [ -n "${HOSTNAME}" ] && sed -Ei "s|HOSTNAME|${HOSTNAME?}|g" /tmp/storageconfig.hcl;
+            [ -n "${API_ADDR}" ] && sed -Ei "s|API_ADDR|${API_ADDR?}|g" /tmp/storageconfig.hcl;
+            [ -n "${TRANSIT_ADDR}" ] && sed -Ei "s|TRANSIT_ADDR|${TRANSIT_ADDR?}|g" /tmp/storageconfig.hcl;
+            [ -n "${RAFT_ADDR}" ] && sed -Ei "s|RAFT_ADDR|${RAFT_ADDR?}|g" /tmp/storageconfig.hcl;
+            /usr/local/bin/docker-entrypoint.sh vault server -config=/tmp/storageconfig.hcl 
+   
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VAULT_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VAULT_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: VAULT_ADDR
+              value: "https://127.0.0.1:8200"
+            - name: VAULT_API_ADDR
+              value: "https://$(POD_IP):8200"
+            - name: SKIP_CHOWN
+              value: "true"
+            - name: SKIP_SETCAP
+              value: "true"
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VAULT_CLUSTER_ADDR
+              value: "https://$(HOSTNAME).vault-internal:8201"
+            - name: HOME
+              value: "/home/vault"
+            
+            
+            - name: "VAULT_CACERT"
+              value: "/vault/userconfig/tls-ca/tls.crt"
+            
+          volumeMounts:
+          
+  
+    
+            - name: data
+              mountPath: /vault/data
+    
+  
+  
+            - name: config
+              mountPath: /vault/config
+  
+            - name: userconfig-tls-transit-server
+              readOnly: true
+              mountPath: /vault/userconfig/tls-transit-server
+            - name: userconfig-tls-ca
+              readOnly: true
+              mountPath: /vault/userconfig/tls-ca
+            - name: home
+              mountPath: /home/vault
+          ports:
+            - containerPort: 8200
+              name: https
+            - containerPort: 8201
+              name: https-internal
+            - containerPort: 8202
+              name: https-rep
+          lifecycle:
+            # Vault container doesn't receive SIGTERM from Kubernetes
+            # and after the grace period ends, Kube sends SIGKILL.  This
+            # causes issues with graceful shutdowns such as deregistering itself
+            # from Consul (zombie services).
+            preStop:
+              exec:
+                command: [
+                  "/bin/sh", "-c",
+                  # Adding a sleep here to give the pod eviction a
+                  # chance to propagate, so requests will not be made
+                  # to this pod while it's terminating
+                  "sleep 5 && kill -SIGTERM $(pidof vault)",
+                ]
+      
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
